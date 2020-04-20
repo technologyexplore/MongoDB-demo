@@ -1,0 +1,175 @@
+
+/sbin/iptables -I INPUT -p tcp --dport 20001 -j ACCEPT
+/sbin/iptables -I INPUT -p tcp --dport 20002 -j ACCEPT
+/sbin/iptables -I INPUT -p tcp --dport 20000 -j ACCEPT
+/sbin/iptables -I INPUT -p tcp --dport 30000 -j ACCEPT
+
+/etc/rc.d/init.d/iptables save
+/etc/init.d/iptables status
+-------------------------------------------------------
+
+将mongo安装文件上传到 /home下并解压(注：mongo解压后即可使用)
+# tar -zxvf mongodb-linux-x86_64-3.0.6.tgz             //解压mongo
+# mv mongodb-linux-x86_64-2.0.9 mongodb-3.0.6         //修改文件夹名为mongodb-3.0.6
+
+mkdir -p /home/mongobase/config
+mkdir -p /home/mongobase/data/shard1
+mkdir -p /home/mongobase/data/shard2
+mkdir -p /home/mongobase/mongologs
+
+#shard1配置
+#/home/mongobase/config/shard1.conf
+dbpath=/home/mongobase/data/shard1
+directoryperdb = true
+shardsvr = true
+replSet = shard1
+port = 20001
+oplogSize = 100
+pidfilepath = /home/mongobase/data/shard1/mongodb.pid
+logpath = /home/mongobase/mongologs/shard1.log
+logappend = true
+smallfiles = true
+profile = 1
+slowms = 5
+fork = true
+
+#shard2配置
+#/home/mongobase/config/shard2.conf
+dbpath=/home/mongobase/data/shard2
+directoryperdb = true
+shardsvr = true
+replSet = shard2
+port = 20002
+oplogSize = 100
+pidfilepath = /home/mongobase/data/shard2/mongodb.pid
+logpath = /home/mongobase/mongologs/shard2.log
+logappend = true
+profile = 1
+slowms = 5
+fork = true
+
+
+/home/mongodb-3.0.6/bin/mongod -f /home/mongobase/config/shard1.conf 
+/home/mongodb-3.0.6/bin/mongod -f /home/mongobase/config/shard2.conf 
+
+----------------------------------------------------------------------
+
+
+#配置服务器
+#cat /home/mongobase/config/config.conf
+pidfilepath = /home/mongobase/data/config/mongodb.pid
+dbpath =/home/mongobase/data/config
+directoryperdb = true
+configsvr = true
+port = 20000
+logpath =/home/mongobase/mongologs/config.log
+logappend = true
+fork = true
+
+
+#mongos配置
+#cat /home/mongobase/config/mongos.conf
+#mongo配置服务器所在ip端口,多个以","分隔
+configdb = 192.168.0.100:20000 
+port = 30000
+#单位mb生成环境请使用100或删除,删除后默认是64
+chunkSize = 1
+logpath =/home/mongobase/mongologs/mongos.log 
+logappend = true 
+fork = true
+
+/home/mongodb-3.0.6/bin/mongod -f /home/mongobase/config/config.conf
+/home/mongodb-3.0.6/bin/mongos -f /home/mongobase/config/mongos.conf
+
+#另外两台服务器重复如上步骤
+
+---------------------------------------------------------------------
+连接一台配置mongodb replica set节点
+
+/home/mongodb-3.0.6/bin/mongo --port 20001
+
+>use admin
+
+> config = {_id:"shard1",members:[
+         {_id: 0, host:"192.168.0.100:20001",priority:1},
+         {_id: 1, host:"192.168.0.101:20001",priority:2},
+         {_id: 2, host:"192.168.0.102:20001",arbiterOnly:true },
+         ]
+};
+
+> rs.initiate(config);
+执行完上述命令需要等待30秒-1分钟的时间
+> rs.status();
+查看当前副本集的情况，和下图一样证明配置成功
+
+
+/home/mongodb-3.0.6/bin/mongo --port 20002
+
+> use admin
+> config = {_id:"shard2",members:[
+         {_id: 0, host:"192.168.0.100:20002", priority:2},
+         {_id: 1, host:"192.168.0.101:20002", priority:1 },
+         {_id: 2, host:"192.168.0.102:20002", arbiterOnly:true },
+         ]
+};
+
+> rs.initiate(config);
+执行完上述命令需要等待30秒-1分钟的时间
+> rs.status();
+查看当前副本集的情况
+---------------------------------------------------------------------------------------------
+
+mongo路由结点配置
+
+/home/mongodb-3.0.6/bin/mongo --port 30000
+
+mongos>use admin
+
+mongos>db.runCommand({addshard:"shard1/192.168.43.5:20001,192.168.43.6:20001,192.168.43.7:20001",name:"shard1",maxsize:1024});       //添加分片shard1,maxsize单位为M ,根据实际情况设置
+
+mongos>db.runCommand({addshard:"shard2/192.168.43.5:20002,192.168.43.6:20002,192.168.43.7:20002",name:"shard2",maxsize:1024});        //添加分片shard2
+
+mongos> db.runCommand({listshards : 1});    //查看分片信息
+
+mongos> printShardingStatus();   //打印分片信息
+
+-------------------------------------------------------------------------------------------------
+
+声明库和表要分片：
+/home/mongodb-3.0.6/bin/mongo --port 30000
+
+mongos> use admin
+mongos > db.runCommand({enablesharding:"test"});        //声明test库允许分片
+mongos>db.runCommand({shardcollection:"test.mpush",key:{buessId:1}});//声明mpush表要分片,buessId作为分片依据
+mongos>db.ensureIndex({statTime:1});//添加statTime索引
+mongos>sh.status();//可以查看分片信息
+
+#插入数据
+mongos> db.mpush.save(
+ {
+     "taskId" : 10010+i,
+     "cookieid" : "cR5yIXpjEISYoN5JkRh",
+     "ipAddress" : "192.168.4.208",
+     "userType" : 1,
+     "statTime" : "2017-09-06 23:22:44"
+ });
+
+ #查看所有
+ db.mpush.find({}).pretty();
+ 
+----------------------------------------------------------
+常用命令操作
+
+/home/mongodb-3.0.6/bin/mongo --port 20001
+
+>db.mpush.stats(); //查看集合mpush的分片情况
+
+mongos>for (var i = 1; i <= 2000; i++) db.mpush.save(
+ {
+     "taskId" : 10010+i,
+     "cookieid" : "cR5yIXpjEISYoN5JkRh",
+     "ipAddress" : "192.168.4.208",
+     "userType" : 1,
+     "statTime" : "2017-09-06 23:22:44"
+ });
+
